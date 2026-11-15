@@ -1,27 +1,35 @@
 {
 	"name": "denon-dn-500bd-mkii",
-	"version": "1.0.3",
-	"api_version": "1.0.0",
-	"description": "Denon DN-500BD MKII",
-	"keywords": [
-		"DVD-Player",
-		"Blue-Ray"
-	],
-	"manufacturer": "Denon",
-	"product": "DN-500BD MKII",
-	"shortname": "DN-500BD MKII",
-	"homepage": "https://github.com/bitfocus/companion-module-denon-dn-500bd-mkii#readme",
-	"main": "index.js",
+	"version": "2.0.0",
+	"description": "Bitfocus Companion module for the Denon DN-500BD MKII Blu-ray player",
+	"main": "src/main.js",
+	"type": "module",
 	"scripts": {
-		"test": "echo \"Error: no test specified\" && exit 1"
+		"format": "prettier -w .",
+		"package": "companion-module-build",
+		"check": "companion-module-check",
+		"test": "node --test test/*.test.js"
 	},
+	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/bitfocus/companion-module-denon-dn-500bd-mkii.git"
+		"url": "git+https://github.com/jamesddancer/companion-module-denon-dn-500bd-mkii.git"
+	},
+	"bugs": {
+		"url": "https://github.com/jamesddancer/companion-module-denon-dn-500bd-mkii/issues"
 	},
 	"author": "Andreas H. Thomsen <mc-hauge@hotmail.com>",
-	"license": "MIT",
-	"bugs": {
-		"url": "https://github.com/bitfocus/companion-module-denon-dn-500bd-mkii/issues"
-	}
+	"engines": {
+		"node": "^22.20",
+		"yarn": "^4"
+	},
+	"dependencies": {
+		"@companion-module/base": "~2.1.3"
+	},
+	"devDependencies": {
+		"@companion-module/tools": "^3.2.1",
+		"prettier": "^3.8.1"
+	},
+	"prettier": "@companion-module/tools/.prettierrc.json",
+	"packageManager": "yarn@4.18.1"
 }

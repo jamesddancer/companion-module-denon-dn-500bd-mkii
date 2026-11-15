@@ -1,0 +1,32 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
+	"id": "denon-dn-500bd-mkii",
+	"name": "denon-dn-500bd-mkii",
+	"shortname": "DN-500BD MKII",
+	"description": "Control and status for the Denon DN-500BD MKII Blu-ray player",
+	"version": "0.0.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/jamesddancer/companion-module-denon-dn-500bd-mkii.git",
+	"bugs": "https://github.com/jamesddancer/companion-module-denon-dn-500bd-mkii/issues",
+	"maintainers": [
+		{
+			"name": "Andreas H. Thomsen",
+			"email": "mc-hauge@hotmail.com"
+		},
+		{
+			"name": "jamesddancer",
+			"github": "jamesddancer"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../src/main.js"
+	},
+	"legacyIds": [],
+	"manufacturer": "Denon",
+	"products": ["DN-500BD MKII"],
+	"keywords": ["DVD-Player", "Blu-ray", "Blue-Ray", "Media Player"]
+}
