@@ -42,6 +42,7 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		this.pollTimer = undefined
 		this.lastSlowPoll = 0
 		this.powerMisses = 0
+		this.lastNetworkError = undefined
 
 		this.splitter = new PacketSplitter((msg) => this.handleMessage(msg))
 	}
@@ -187,11 +188,16 @@ export default class DenonDN500BDInstance extends InstanceBase {
 
 		this.socket.on('error', (err) => {
 			this.updateStatus(InstanceStatus.ConnectionFailure, err.message)
-			this.log('error', 'Network error: ' + err.message)
+			// TCPHelper retries every 2s; only log when the error changes
+			if (this.lastNetworkError !== err.message) {
+				this.lastNetworkError = err.message
+				this.log('error', 'Network error: ' + err.message)
+			}
 		})
 
 		this.socket.on('connect', () => {
 			this.log('info', `Connected to ${host}:${port}`)
+			this.lastNetworkError = undefined
 			this.updateStatus(InstanceStatus.Ok)
 			this.splitter.reset()
 			this.powerMisses = 0

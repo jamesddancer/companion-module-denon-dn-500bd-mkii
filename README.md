@@ -2,7 +2,7 @@
 
 [Bitfocus Companion](https://bitfocus.io/companion) module for the Denon DN-500BD MKII Blu-ray player. It controls the player over TCP (port 9030 by default) and reads its status into Companion variables and feedbacks.
 
-Built on `@companion-module/base` 2.1 for Companion 4.3 / 5.x. See [companion/HELP.md](companion/HELP.md) for the configuration, actions, feedbacks and the full variable list.
+Built on `@companion-module/base` 2.1 (works on Companion 4.3, 5.0.x and 5.1.x). See [companion/HELP.md](companion/HELP.md) for the configuration, actions, feedbacks and the full variable list.
 
 ## Development
 
@@ -64,6 +64,11 @@ To try it in Companion, set **Settings → Developer modules path** to the folde
 | `last_error`                  | Last error reported by the player (Busy / NACK: <command>)                                               |
 
 ## Changelog
+
+**V2.0.1**
+
+- Network errors are logged once per outage instead of on every reconnect attempt
+- Verified install and runtime on Companion 5.1.3 (also valid for 5.0.x)
 
 **V2.0.0**
 

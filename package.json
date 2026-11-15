@@ -1,6 +1,6 @@
 {
 	"name": "denon-dn-500bd-mkii",
-	"version": "2.0.0",
+	"version": "2.0.1",
 	"description": "Bitfocus Companion module for the Denon DN-500BD MKII Blu-ray player",
 	"main": "src/main.js",
 	"type": "module",
