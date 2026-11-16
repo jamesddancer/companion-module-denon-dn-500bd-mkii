@@ -485,6 +485,8 @@ test('real TCP wire format (ack+payload, bare payloads, error, nack for ACK byte
 		assert.equal(v.group_count, 7)
 		assert.equal(v.elapsed_time, '00:07:07')
 		assert.equal(v.elapsed_seconds, 427)
+		assert.equal(v.elapsed_mmss, '07:07')
+		assert.equal(v.remaining_mmss, '40:29')
 		assert.equal(v.remaining_time, '00:40:29')
 		assert.equal(v.track_time, '00:46')
 		assert.equal(v.track_title, 'Ackerman Story')

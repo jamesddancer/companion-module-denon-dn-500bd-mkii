@@ -31,6 +31,8 @@ Power, Disc Drive / Disc Tray, Track Playback (play, pause, stop, mute), Track S
 
 Use them as `$(<connection label>:<variable>)`, for example `$(denon:elapsed_time)`.
 
+Custom time formats work in expression mode, e.g. `secondsToTimestamp($(denon:elapsed_seconds), '[mm]:ss')` (total minutes) or `'mm:ss'` (minutes wrap at 60).
+
 | Variable                      | Description                                                                                              |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `connection`                  | Connection state (Connected / Disconnected)                                                              |
@@ -54,8 +56,10 @@ Use them as `$(<connection label>:<variable>)`, for example `$(denon:elapsed_tim
 | `group_number`                | Current group/title/folder number                                                                        |
 | `group_count`                 | Total number of groups/titles/folders                                                                    |
 | `elapsed_time`                | Elapsed track time (HH:MM:SS)                                                                            |
+| `elapsed_mmss`                | Elapsed track time as total minutes:seconds, no hours (MM:SS, e.g. `07:07`, `72:15`)                     |
 | `elapsed_seconds`             | Elapsed track time in seconds                                                                            |
 | `remaining_time`              | Remaining track time (HH:MM:SS)                                                                          |
+| `remaining_mmss`              | Remaining track time as total minutes:seconds, no hours (MM:SS, e.g. `40:29`)                            |
 | `remaining_seconds`           | Remaining track time in seconds                                                                          |
 | `media_type`                  | Media type (DVD Video, BDMV, CD-DA, ...)                                                                 |
 | `media_type_code`             | Media type raw code (DVV, DVA, CDA, CDR, SAC, DVR, BDM, BDA, AVH, DLN, EXT, UKN)                         |

@@ -415,14 +415,20 @@ const PARSERS = [
 		prefix: 'ET',
 		parse: (v) => {
 			const secs = parseHHHMMSS(v)
-			return { key: 'elapsed', values: { elapsed_time: formatHMS(secs), elapsed_seconds: secs } }
+			return {
+				key: 'elapsed',
+				values: { elapsed_time: formatHMS(secs), elapsed_mmss: formatMS(secs), elapsed_seconds: secs },
+			}
 		},
 	},
 	{
 		prefix: 'RM',
 		parse: (v) => {
 			const secs = parseHHHMMSS(v)
-			return { key: 'remaining', values: { remaining_time: formatHMS(secs), remaining_seconds: secs } }
+			return {
+				key: 'remaining',
+				values: { remaining_time: formatHMS(secs), remaining_mmss: formatMS(secs), remaining_seconds: secs },
+			}
 		},
 	},
 	{

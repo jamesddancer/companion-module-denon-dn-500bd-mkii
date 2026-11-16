@@ -105,8 +105,16 @@ test('numbers and text', () => {
 test('times', () => {
 	assert.deepEqual(p('tl00325').values, { track_time: '03:25', track_time_seconds: 205, track_time_frames: null })
 	assert.deepEqual(p('tl0032574').values, { track_time: '03:25', track_time_seconds: 205, track_time_frames: 74 })
-	assert.deepEqual(p('ET0010203').values, { elapsed_time: '01:02:03', elapsed_seconds: 3723 })
-	assert.deepEqual(p('RM0000059').values, { remaining_time: '00:00:59', remaining_seconds: 59 })
+	assert.deepEqual(p('ET0010203').values, { elapsed_time: '01:02:03', elapsed_mmss: '62:03', elapsed_seconds: 3723 })
+	assert.deepEqual(p('RM0000059').values, {
+		remaining_time: '00:00:59',
+		remaining_mmss: '00:59',
+		remaining_seconds: 59,
+	})
+	assert.equal(p('ET0000707').values.elapsed_mmss, '07:07')
+	assert.equal(p('ET0011215').values.elapsed_mmss, '72:15')
+	assert.equal(p('RM0004029').values.remaining_mmss, '40:29')
+	assert.equal(p('ETUNKN').values.elapsed_mmss, '')
 })
 
 test('media / audio', () => {
