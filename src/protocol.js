@@ -509,6 +509,7 @@ export class PacketSplitter {
 	constructor(onMessage) {
 		this.onMessage = onMessage
 		this.buffer = ''
+		this.replyChunk = false
 	}
 
 	/** True if there is unprocessed (unterminated) data waiting */
@@ -517,8 +518,16 @@ export class PacketSplitter {
 	}
 
 	push(data) {
-		this.buffer += Buffer.isBuffer(data) ? data.toString('latin1') : String(data)
+		const chunk = Buffer.isBuffer(data) ? data.toString('latin1') : String(data)
+		// A new reply starting while an unterminated packet is buffered ends that packet. The
+		// player sends each reply in one TCP segment, without a terminator.
+		if (this.buffer.length > 0 && /^(?:[\x06\x15@]|n?ack)/i.test(chunk)) this.process(true)
+		this.buffer += chunk
+		this.replyChunk = false
 		this.process(false)
+		// "ack+<payload>" replies are unterminated: the end of the segment is the end of the payload
+		if (this.replyChunk && this.buffer.length > 0) this.process(true)
+		this.replyChunk = false
 	}
 
 	/** Treat whatever is buffered as complete (call after the line has been idle a while) */
@@ -540,21 +549,21 @@ export class PacketSplitter {
 				continue
 			}
 
-			// ASCII "ack" / "nack" (any case)
+			// ASCII "ack" / "nack" (any case). Not inside an "ack+" payload (a title could be "Ackerman").
 			const lower = this.buffer.slice(0, 4).toLowerCase()
-			if (lower.startsWith(ASCII_NACK)) {
-				const raw = this.buffer.slice(0, 4)
-				this.buffer = this.buffer.slice(4)
-				this.onMessage({ type: 'nack', raw })
+			if (!this.replyChunk && (lower.startsWith(ASCII_NACK) || lower.startsWith(ASCII_ACK))) {
+				// Over TCP the player answers "ack", "nack", or "ack+<payload>"
+				const isNack = lower.startsWith(ASCII_NACK)
+				let len = isNack ? 4 : 3
+				const plus = this.buffer[len] === '+'
+				if (plus) len++
+				const raw = this.buffer.slice(0, len)
+				this.buffer = this.buffer.slice(len)
+				if (plus) this.replyChunk = true
+				this.onMessage({ type: isNack ? 'nack' : 'ack', raw, withPayload: plus })
 				continue
 			}
-			if (lower.startsWith(ASCII_ACK)) {
-				const raw = this.buffer.slice(0, 3)
-				this.buffer = this.buffer.slice(3)
-				this.onMessage({ type: 'ack', raw })
-				continue
-			}
-			if (!force && (ASCII_NACK.startsWith(lower) || ASCII_ACK.startsWith(lower))) {
+			if (!force && !this.replyChunk && (ASCII_NACK.startsWith(lower) || ASCII_ACK.startsWith(lower))) {
 				// Could be the start of "ack"/"nack": wait for more data
 				return
 			}
@@ -586,7 +595,8 @@ export class PacketSplitter {
 			let body = raw
 			if (body.startsWith('@0')) body = body.slice(2)
 			else if (body.startsWith('@')) body = body.slice(1).replace(/^ ?0/, '')
-			if (body.length > 0) this.onMessage({ type: 'packet', body, raw })
+			// inReply: the packet came right after "ack+" in the same segment, ie it is the answer
+			if (body.length > 0) this.onMessage({ type: 'packet', body, raw, inReply: this.replyChunk })
 		}
 	}
 

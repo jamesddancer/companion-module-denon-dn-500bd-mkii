@@ -42,4 +42,16 @@ export const UpgradeScripts = [
 
 		return { updatedConfig, updatedActions, updatedFeedbacks: [] }
 	},
+
+	/**
+	 * v2.0.3: over the network the player NACKs the ACK byte we sent for unsolicited status,
+	 * so stop sending it by default.
+	 */
+	function v2_0_3(_context, props) {
+		let updatedConfig = null
+		if (props.config && props.config.ack_unsolicited !== false) {
+			updatedConfig = { ...props.config, ack_unsolicited: false }
+		}
+		return { updatedConfig, updatedActions: [], updatedFeedbacks: [] }
+	},
 ]

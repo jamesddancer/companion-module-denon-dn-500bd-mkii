@@ -28,3 +28,16 @@ test('v2.0.0 upgrade', () => {
 	assert.equal(res.updatedActions[0].actionId, 'random_mode')
 	assert.deepEqual(res.updatedActions[1].options.sel_cmd, { isExpression: false, value: 'DVOP' })
 })
+
+test('v2.0.3 upgrade turns off ACKing unsolicited status', () => {
+	const res = UpgradeScripts[1](
+		{ currentConfig: {} },
+		{ config: { host: 'x', ack_unsolicited: true }, actions: [], feedbacks: [] },
+	)
+	assert.equal(res.updatedConfig.ack_unsolicited, false)
+	const none = UpgradeScripts[1](
+		{ currentConfig: {} },
+		{ config: { ack_unsolicited: false }, actions: [], feedbacks: [] },
+	)
+	assert.equal(none.updatedConfig, null)
+})

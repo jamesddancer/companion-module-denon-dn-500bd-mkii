@@ -393,3 +393,124 @@ test('player that ACKs but never answers status: warns about unexpected format',
 		await player.close().catch(() => {})
 	}
 })
+
+/**
+ * Mock that reproduces the wire format logged from a real DN-500BD MKII on TCP 9030 (2026-11-16):
+ *   control / ?PW        -> "ack"
+ *   status requests      -> "ack+<payload>" in one segment, no terminator. The payload is
+ *                           "@0<code><data>", bare "<data>" (?ET, ?RM), or "error" (?Tr, ?Tt)
+ *   an ACK byte from us  -> "nack"
+ */
+class RealTcpPlayer {
+	constructor() {
+		this.received = []
+		this.acksFromHost = 0
+		this.server = net.createServer((sock) => {
+			this.sock = sock
+			let buf = ''
+			sock.on('data', (d) => {
+				buf += d.toString('latin1')
+				for (;;) {
+					if (buf[0] === '\x06') {
+						this.acksFromHost++
+						buf = buf.slice(1)
+						setTimeout(() => !sock.destroyed && sock.write('nack'), 5)
+						continue
+					}
+					const i = buf.indexOf('\r')
+					if (i === -1) return
+					const body = buf.slice(0, i).replace(/^@0/, '')
+					buf = buf.slice(i + 1)
+					this.received.push(body)
+					setTimeout(() => !sock.destroyed && sock.write(this.reply(body), 'latin1'), 10)
+				}
+			})
+		})
+	}
+	reply(body) {
+		const r = {
+			'?CD': '@0CDCI',
+			'?ST': '@0STPP',
+			'?Tr': 'error',
+			'?Tt': 'error',
+			'?PCGp': '@0PCGp0003',
+			'?PCTG': '@0PCTG0007',
+			'?ET': '0000707',
+			'?RM': '0004029',
+			'?tl': '@0tl00046',
+			'?ti': '@0tiAckerman Story',
+			'?at': 'Bare Artist',
+			'?al': 'error',
+			'?PCTYP': '@0PCTYPBDM',
+			'?PCAFMT': '@0PCAFMTDLH',
+			'?PCACH': '@0BDACH51C',
+			'?PCDG+': '@0PCDG+eng',
+			'?PCDG-': 'error',
+			'?DVSTC': '@0DVSTCUKN',
+			'?VN': '@0VN01.02.03DN-500BD',
+			'?fs': '@0Fs48',
+			'?PCCT': '@0PCCT00',
+		}[body]
+		return r === undefined ? 'ack' : 'ack+' + r
+	}
+	listen() {
+		return new Promise((r) => this.server.listen(0, '127.0.0.1', () => r(this.server.address().port)))
+	}
+	close() {
+		this.sock?.destroy()
+		return new Promise((r) => this.server.close(r))
+	}
+}
+
+test('real TCP wire format (ack+payload, bare payloads, error, nack for ACK bytes)', async () => {
+	const player = new RealTcpPlayer()
+	const port = await player.listen()
+	const { ctx, proxy } = makeContext()
+	const logs = []
+	const instance = new ModuleInstance(proxy)
+	instance.log = (level, msg) => logs.push([level, msg])
+	try {
+		// ack_unsolicited omitted: the default must not send ACK bytes
+		await instance.init({ host: '127.0.0.1', port: String(port), poll_interval: 250, response_timeout: 200 }, true)
+		const ok = await waitFor(() => ctx.variables.model_name === 'DN-500BD' && ctx.variables.remaining_time !== '')
+		if (!ok) console.log(JSON.stringify(ctx.variables), logs.slice(-30))
+		assert.ok(ok, 'polled')
+		const v = ctx.variables
+		assert.equal(v.power, 'On')
+		assert.equal(v.disc_status, 'Disc In')
+		assert.equal(v.track_status, 'Paused')
+		assert.equal(v.track_number, 'N/A')
+		assert.equal(v.track_count, 'N/A')
+		assert.equal(v.group_number, 3)
+		assert.equal(v.group_count, 7)
+		assert.equal(v.elapsed_time, '00:07:07')
+		assert.equal(v.elapsed_seconds, 427)
+		assert.equal(v.remaining_time, '00:40:29')
+		assert.equal(v.track_time, '00:46')
+		assert.equal(v.track_title, 'Ackerman Story')
+		assert.equal(v.track_artist, 'Bare Artist')
+		assert.equal(v.album_title, 'N/A')
+		assert.equal(v.audio_format, 'Dolby TrueHD')
+		assert.equal(v.audio_dialog_secondary, 'N/A')
+		assert.equal(v.sample_rate, '48 kHz')
+		assert.equal(v.last_error, '')
+
+		// Control commands still work and nothing gets NACK-confused
+		await runAction(ctx, 'track_playback', { sel_cmd: '2353' })
+		assert.ok(await waitFor(() => player.received.includes('2353')))
+		await sleep(2500)
+		assert.equal(player.acksFromHost, 0, 'no ACK bytes sent to the player')
+		assert.ok(!logs.some(([l]) => l === 'warn'), 'no warnings: ' + JSON.stringify(logs.filter(([l]) => l === 'warn')))
+		assert.ok(!logs.some(([, m]) => /Unrecognised/.test(m)), 'nothing unrecognised')
+		// "error" requests back off after ERROR_LIMIT tries
+		const trCount = player.received.filter((b) => b === '?Tr').length
+		assert.ok(trCount <= 4, `?Tr polled ${trCount} times`)
+		assert.ok(
+			logs.some(([l, m]) => l === 'info' && /@0\?Tr/.test(m)),
+			'backoff logged',
+		)
+	} finally {
+		await instance.destroy()
+		await player.close().catch(() => {})
+	}
+})

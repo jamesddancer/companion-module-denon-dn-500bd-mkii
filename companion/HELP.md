@@ -8,7 +8,7 @@ This module controls a Denon DN-500BD MKII Blu-ray player over the network (TCP)
 - **Target Port**: TCP control port (default `9030`)
 - **Poll status**: periodically request the player's status (default on). Turn it off if you only want to send commands; variables will then only change when the player sends status on its own.
 - **Poll interval**: how often to poll, in ms (default `1000`). Track/disc metadata (titles, audio format, etc.) is refreshed every 5 seconds and whenever the track, title or disc changes.
-- **Acknowledge unsolicited status messages**: the player re-sends status it pushes on its own until it receives an ACK. Leave this on.
+- **Send ACK byte for unsolicited status**: serial-port behaviour. Leave it off on the network: the player answers the ACK byte with `nack`. Upgrading to 2.0.3 turns it off.
 - **Response timeout**: how long to wait for the player to answer each command (default `500` ms).
 - **Debug log raw traffic**: logs every packet sent (TX) and every byte received (RX, as hex and text) plus each timeout at debug level. On by default; turn it off once everything works.
 
@@ -81,6 +81,7 @@ Use them as `$(<connection label>:<variable>)`, for example `$(denon:elapsed_tim
 Open the connection's log with debug messages shown:
 
 - `Receiving status from the player (first reply: ...)` at info level means status is being read.
+- Over the network the player answers status requests as `ack+<payload>` with no terminator. The payload is `@0<code><data>`, the bare data (e.g. `ack+0000707` for elapsed time), or `error` when the value isn't available. `error` shows the variable as `N/A`, and after 3 errors in a row that value is only re-checked every 30 s.
 - `RX ... bytes: ...` lines show exactly what the player sent. ACK/NACK may arrive as the bytes 0x06/0x15 or as the text `ack`/`nack`; both are accepted.
 - `No reply to @0?XX within N ms (0 bytes received meanwhile)` means the player said nothing to that request.
 - A warning `... status requests in a row got no usable reply` or `No bytes at all received from the player` means status replies aren't arriving or are in a format the module doesn't recognise. The RX lines show what did arrive.

@@ -31,6 +31,9 @@ const POWER_OFF_MISSES = 2
 const IDLE_FLUSH_MS = 80
 /** Warn when this many status requests in a row get no reply */
 const NO_REPLY_WARN_COUNT = 5
+/** After this many consecutive "error" replies, a status request is only polled every ERROR_BACKOFF_MS */
+const ERROR_LIMIT = 3
+const ERROR_BACKOFF_MS = 30000
 
 export default class DenonDN500BDInstance extends InstanceBase {
 	constructor(internal) {
@@ -54,6 +57,9 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		this.gotFirstStatus = false
 		this.noReplyStreak = 0
 		this.noReplyWarned = false
+		this.requestErrors = {}
+		this.requestBackoffUntil = {}
+		this.acksSent = 0
 
 		this.splitter = new PacketSplitter((msg) => this.handleMessage(msg))
 	}
@@ -132,9 +138,9 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			{
 				type: 'checkbox',
 				id: 'ack_unsolicited',
-				label: 'Acknowledge unsolicited status messages (recommended)',
+				label: 'Send ACK byte for unsolicited status (serial behaviour; the network port NACKs it)',
 				width: 6,
-				default: true,
+				default: false,
 			},
 			{
 				type: 'number',
@@ -223,6 +229,9 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			this.noReplyStreak = 0
 			this.noReplyWarned = false
 			this.rxBytes = 0
+			this.requestErrors = {}
+			this.requestBackoffUntil = {}
+			this.acksSent = 0
 			this.updateState({ connection: 'Connected' })
 			this.requestAllStatus(true)
 			this.startPolling()
@@ -286,12 +295,13 @@ export default class DenonDN500BDInstance extends InstanceBase {
 	}
 
 	/** Queue a status request by name (see STATUS_REQUESTS). Skips duplicates. */
-	requestStatus(name) {
+	requestStatus(name, force = false) {
 		const req = STATUS_REQUESTS[name]
 		if (!req || !this.isConnected) return
+		if (!force && (this.requestBackoffUntil[name] ?? 0) > Date.now()) return
 		if (this.queue.some((q) => q.body === req.body)) return
 		if (this.pending && this.pending.body === req.body) return
-		this.queue.push({ body: req.body, kind: 'status', poll: true, req })
+		this.queue.push({ body: req.body, kind: 'status', poll: true, req, name })
 		this.processQueue()
 	}
 
@@ -431,7 +441,20 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		}
 
 		if (msg.type === 'nack') {
-			if (!pending) return
+			if (this.acksSent > 0) {
+				// The player NACKs the ACK bytes we send it over the network; not about a command
+				this.acksSent--
+				if (this.verbose) this.log('debug', 'Ignoring NACK of our own ACK')
+				return
+			}
+			if (!pending) {
+				if (this.verbose) this.log('debug', 'Ignoring stray NACK (nothing pending)')
+				return
+			}
+			if (pending.kind === 'status' && pending.gotAck) {
+				if (this.verbose) this.log('debug', `Ignoring stray NACK after ACK of @0${pending.body}`)
+				return
+			}
 			if (pending.kind === 'control') {
 				this.log('warn', `Player rejected command @0${pending.body}`)
 				this.updateState({ last_error: `NACK: @0${pending.body}` })
@@ -448,8 +471,38 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			if (this.verbose) this.log('debug', `Ignoring echo of @0${msg.body}`)
 			return
 		}
-		const parsed = parseStatus(msg.body)
-		const solicited = !!(pending && pending.req && parsed && parsed.key === pending.req.key)
+		const raw = msg.raw ?? msg.body
+		const framed = raw.startsWith('@')
+		const pendingReq =
+			pending && pending.kind === 'status' && pending.req && !pending.req.ackIsAnswer ? pending.req : null
+
+		// "ack+error": the player can't answer this request right now (eg not available for this disc)
+		if (pendingReq && msg.body.trim().toLowerCase() === 'error') {
+			this.onRequestError(pending)
+			this.completePending()
+			return
+		}
+
+		let parsed = null
+		if (pendingReq) {
+			// Over TCP the payload often comes without its '@0<code>' prefix ("ack+0000707" for ?ET).
+			// Attribute bare payloads to the request we're waiting on.
+			const code = pendingReq.body.replace(/^\?/, '')
+			const asAnswer = parseStatus(code + msg.body)
+			const direct = parseStatus(msg.body)
+			if (direct && direct.key === pendingReq.key)
+				parsed = direct // "@0CDCI", or "CDCI" without '@0'
+			else if (!framed && msg.inReply)
+				parsed = asAnswer // bare data after "ack+", eg "0000707" for ?ET
+			else parsed = direct // something else (eg an unsolicited update)
+		} else {
+			parsed = parseStatus(msg.body)
+		}
+		const solicited = !!(pendingReq && parsed && parsed.key === pendingReq.key)
+		if (solicited && pending.name) {
+			this.requestErrors[pending.name] = 0
+			delete this.requestBackoffUntil[pending.name]
+		}
 
 		if (!parsed) {
 			this.log('debug', `Unrecognised message: ${describeBytes(msg.raw ?? msg.body)}`)
@@ -486,10 +539,43 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			this.pendingTimer = setTimeout(() => {
 				if (this.pending === pending) this.completePending()
 			}, ACK_GRACE_MS)
-		} else if (this.config.ack_unsolicited !== false && this.isConnected) {
-			// Unsolicited status information must be acknowledged (p.5)
+		} else if (parsed && this.config.ack_unsolicited === true && this.isConnected) {
+			// Serial protocol: unsolicited status information should be acknowledged (p.5).
+			// The network port answers this byte with "nack", so it is off by default.
+			this.acksSent++
+			// Expect the player's "nack" for it shortly; don't let the count linger
+			setTimeout(() => {
+				if (this.acksSent > 0) this.acksSent--
+			}, 500)
+			if (this.verbose) this.log('debug', 'TX 06 | <ACK> (unsolicited status)')
 			this.socket.send(Buffer.from([ACK]))
 		}
+	}
+
+	/** The player answered "error" to a status request */
+	onRequestError(item) {
+		const name = item.name
+		if (this.verbose) this.log('debug', `Player answered "error" to @0${item.body}`)
+		if (!name) return
+		const count = (this.requestErrors[name] ?? 0) + 1
+		this.requestErrors[name] = count
+		// Mark the affected variables unavailable
+		const sample = parseStatus(item.req.body.replace(/^\?/, '') + 'UNKN')
+		if (sample) {
+			const values = {}
+			for (const k of Object.keys(sample.values)) {
+				const init = INITIAL_VALUES[k]
+				values[k] = typeof init === 'string' ? 'N/A' : init
+			}
+			this.updateState(values)
+		}
+		if (count === ERROR_LIMIT) {
+			this.log(
+				'info',
+				`Player answers "error" to @0${item.body} (not available right now); polling it every ${ERROR_BACKOFF_MS / 1000} s`,
+			)
+		}
+		if (count >= ERROR_LIMIT) this.requestBackoffUntil[name] = Date.now() + ERROR_BACKOFF_MS
 	}
 
 	applyStatus(parsed) {
