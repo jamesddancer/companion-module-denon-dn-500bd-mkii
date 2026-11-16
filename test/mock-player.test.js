@@ -487,6 +487,10 @@ test('real TCP wire format (ack+payload, bare payloads, error, nack for ACK byte
 		assert.equal(v.elapsed_seconds, 427)
 		assert.equal(v.elapsed_mmss, '07:07')
 		assert.equal(v.remaining_mmss, '40:29')
+		// 427 s elapsed + 2429 s remaining
+		assert.equal(v.track_length_seconds, 2856)
+		assert.equal(v.track_length, '00:47:36')
+		assert.equal(v.track_length_mmss, '47:36')
 		assert.equal(v.remaining_time, '00:40:29')
 		assert.equal(v.track_time, '00:46')
 		assert.equal(v.track_title, 'Ackerman Story')
@@ -515,4 +519,59 @@ test('real TCP wire format (ack+payload, bare payloads, error, nack for ACK byte
 		await instance.destroy()
 		await player.close().catch(() => {})
 	}
+})
+
+test('track_length: pairs same-cycle samples, holds within 2 s, resets on track/title/disc change', async () => {
+	const { ctx, proxy } = makeContext()
+	const instance = new ModuleInstance(proxy)
+	instance.log = () => {}
+	instance.config = {}
+	const et = (secs, cycle) => instance.applyStatus({ key: 'elapsed', values: { elapsed_seconds: secs } }, cycle)
+	const rm = (secs, cycle) => instance.applyStatus({ key: 'remaining', values: { remaining_seconds: secs } }, cycle)
+	const v = ctx.variables
+
+	// Samples from different cycles are never combined
+	et(100, 1)
+	rm(3500, 2)
+	assert.equal(v.track_length_seconds, undefined)
+	et(101, 2)
+	assert.equal(v.track_length_seconds, 3601)
+	assert.equal(v.track_length, '01:00:01')
+	assert.equal(v.track_length_mmss, '60:01')
+
+	// Jitter of up to 2 s is ignored
+	et(102, 3)
+	rm(3497, 3) // 3599
+	assert.equal(v.track_length_seconds, 3601)
+	et(103, 4)
+	rm(3500, 4) // 3603
+	assert.equal(v.track_length_seconds, 3601)
+	// A bigger move is followed
+	et(104, 5)
+	rm(3510, 5) // 3614
+	assert.equal(v.track_length_seconds, 3614)
+
+	// Unsolicited (no cycle) samples are ignored
+	et(0, undefined)
+	assert.equal(v.track_length_seconds, 3614)
+
+	// Title change: cleared, then re-learned from the next cycle
+	instance.applyStatus({ key: 'group_number', values: { group_number: 4 } }, 6)
+	assert.equal(v.track_length, '')
+	assert.equal(v.track_length_seconds, null)
+	et(0, 7)
+	rm(1800, 7)
+	assert.equal(v.track_length_mmss, '30:00')
+
+	// Disc change clears it too
+	instance.applyStatus({ key: 'disc', values: { disc_status_code: 'TO' } }, 8)
+	assert.equal(v.track_length_mmss, '')
+
+	// Unknown elapsed time: empty
+	et(10, 9)
+	rm(20, 9)
+	assert.equal(v.track_length_seconds, 30)
+	et(null, 10)
+	assert.equal(v.track_length, '')
+	await instance.destroy()
 })

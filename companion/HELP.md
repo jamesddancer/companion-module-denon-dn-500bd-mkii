@@ -31,54 +31,59 @@ Power, Disc Drive / Disc Tray, Track Playback (play, pause, stop, mute), Track S
 
 Use them as `$(<connection label>:<variable>)`, for example `$(denon:elapsed_time)`.
 
+The player has no "total length" query, so `track_length*` is `elapsed_seconds + remaining_seconds`, using an elapsed and a remaining reading from the same poll. The value holds steady and only updates if it moves by more than 2 seconds. It is cleared when the track, title/group number or disc changes, and stays empty until it is known.
+
 Custom time formats work in expression mode, e.g. `secondsToTimestamp($(denon:elapsed_seconds), '[mm]:ss')` (total minutes) or `'mm:ss'` (minutes wrap at 60).
 
-| Variable                      | Description                                                                                              |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `connection`                  | Connection state (Connected / Disconnected)                                                              |
-| `power`                       | Power status (On / Off / Unknown)                                                                        |
-| `disc_status`                 | Disc status (No Disc, Disc In, Unformatted, Tray Open, Tray Closed, Tray Error)                          |
-| `disc_status_code`            | Disc status raw code (NC, CI, UF, TO, TC, TE)                                                            |
-| `tray_open`                   | Disc tray is open/opening (true/false)                                                                   |
-| `disc_present`                | A disc is loaded (true/false)                                                                            |
-| `track_status`                | Track status (Playing, Paused, Slow/Fast Play Forward/Reverse, Step Play, Menu, Setup, Track Menu, Home) |
-| `track_status_code`           | Track status raw code (PL, PP, DVSF, DVSR, DVFF, DVFR, DVSP, ED, DVSU, DVTR, DVHM)                       |
-| `playing`                     | Currently playing (true/false)                                                                           |
-| `paused`                      | Currently paused (true/false)                                                                            |
-| `track_number`                | Current track/chapter number                                                                             |
-| `track_count`                 | Total number of tracks/chapters in the tracklist                                                         |
-| `track_title`                 | Title of the current track                                                                               |
-| `track_artist`                | Artist of the current track                                                                              |
-| `album_title`                 | Album of the current track                                                                               |
-| `track_time`                  | Current track time position (MM:SS)                                                                      |
-| `track_time_seconds`          | Current track time position in seconds                                                                   |
-| `track_time_frames`           | Current track time frame (00-74), if reported                                                            |
-| `group_number`                | Current group/title/folder number                                                                        |
-| `group_count`                 | Total number of groups/titles/folders                                                                    |
-| `elapsed_time`                | Elapsed track time (HH:MM:SS)                                                                            |
-| `elapsed_mmss`                | Elapsed track time as total minutes:seconds, no hours (MM:SS, e.g. `07:07`, `72:15`)                     |
-| `elapsed_seconds`             | Elapsed track time in seconds                                                                            |
-| `remaining_time`              | Remaining track time (HH:MM:SS)                                                                          |
-| `remaining_mmss`              | Remaining track time as total minutes:seconds, no hours (MM:SS, e.g. `40:29`)                            |
-| `remaining_seconds`           | Remaining track time in seconds                                                                          |
-| `media_type`                  | Media type (DVD Video, BDMV, CD-DA, ...)                                                                 |
-| `media_type_code`             | Media type raw code (DVV, DVA, CDA, CDR, SAC, DVR, BDM, BDA, AVH, DLN, EXT, UKN)                         |
-| `audio_format`                | Audio format (Dolby Digital, DTS, LPCM, DTS-HD MA, ...)                                                  |
-| `audio_format_code`           | Audio format raw code (DBD, DTS, MPG, LPC, ...)                                                          |
-| `audio_channels`              | Audio channels (2ch, 5.1ch, 7.1ch, ...)                                                                  |
-| `audio_channels_code`         | Audio channels raw code (2CH, 51C, 71C, ...)                                                             |
-| `audio_dialog_primary`        | Primary audio dialog language                                                                            |
-| `audio_dialog_primary_code`   | Primary audio dialog ISO 639-2 code                                                                      |
-| `audio_dialog_secondary`      | Secondary audio dialog language                                                                          |
-| `audio_dialog_secondary_code` | Secondary audio dialog ISO 639-2 code                                                                    |
-| `subtitle`                    | Subtitle language                                                                                        |
-| `subtitle_code`               | Subtitle raw code                                                                                        |
-| `sample_rate`                 | Current track sampling frequency (kHz)                                                                   |
-| `firmware_version`            | Firmware version                                                                                         |
-| `model_name`                  | Model name                                                                                               |
-| `network_connection`          | Network connection test result (Connected / Failed)                                                      |
-| `random_mode`                 | Random/shuffle mode (only updated when the player reports it)                                            |
-| `last_error`                  | Last error reported by the player (Busy / NACK: <command>)                                               |
+| Variable                      | Description                                                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `connection`                  | Connection state (Connected / Disconnected)                                                                                             |
+| `power`                       | Power status (On / Off / Unknown)                                                                                                       |
+| `disc_status`                 | Disc status (No Disc, Disc In, Unformatted, Tray Open, Tray Closed, Tray Error)                                                         |
+| `disc_status_code`            | Disc status raw code (NC, CI, UF, TO, TC, TE)                                                                                           |
+| `tray_open`                   | Disc tray is open/opening (true/false)                                                                                                  |
+| `disc_present`                | A disc is loaded (true/false)                                                                                                           |
+| `track_status`                | Track status (Playing, Paused, Slow/Fast Play Forward/Reverse, Step Play, Menu, Setup, Track Menu, Home)                                |
+| `track_status_code`           | Track status raw code (PL, PP, DVSF, DVSR, DVFF, DVFR, DVSP, ED, DVSU, DVTR, DVHM)                                                      |
+| `playing`                     | Currently playing (true/false)                                                                                                          |
+| `paused`                      | Currently paused (true/false)                                                                                                           |
+| `track_number`                | Current track/chapter number                                                                                                            |
+| `track_count`                 | Total number of tracks/chapters in the tracklist                                                                                        |
+| `track_title`                 | Title of the current track                                                                                                              |
+| `track_artist`                | Artist of the current track                                                                                                             |
+| `album_title`                 | Album of the current track                                                                                                              |
+| `track_time`                  | Time position reported by the `?tl` query (MM:SS, minutes can exceed 59). A position, not the length; it can differ from `elapsed_time` |
+| `track_time_seconds`          | Current track time position in seconds                                                                                                  |
+| `track_time_frames`           | Frame of `track_time` (00-74), if reported                                                                                              |
+| `track_length`                | Total length of the current track/title (HH:MM:SS), computed as elapsed + remaining (see below)                                         |
+| `track_length_mmss`           | Same, as total minutes:seconds (e.g. `47:36`, `72:15`)                                                                                  |
+| `track_length_seconds`        | Same, in seconds                                                                                                                        |
+| `group_number`                | Current group/title/folder number                                                                                                       |
+| `group_count`                 | Total number of groups/titles/folders                                                                                                   |
+| `elapsed_time`                | Elapsed track time (HH:MM:SS)                                                                                                           |
+| `elapsed_mmss`                | Elapsed track time as total minutes:seconds, no hours (MM:SS, e.g. `07:07`, `72:15`)                                                    |
+| `elapsed_seconds`             | Elapsed track time in seconds                                                                                                           |
+| `remaining_time`              | Remaining track time (HH:MM:SS)                                                                                                         |
+| `remaining_mmss`              | Remaining track time as total minutes:seconds, no hours (MM:SS, e.g. `40:29`)                                                           |
+| `remaining_seconds`           | Remaining track time in seconds                                                                                                         |
+| `media_type`                  | Media type (DVD Video, BDMV, CD-DA, ...)                                                                                                |
+| `media_type_code`             | Media type raw code (DVV, DVA, CDA, CDR, SAC, DVR, BDM, BDA, AVH, DLN, EXT, UKN)                                                        |
+| `audio_format`                | Audio format (Dolby Digital, DTS, LPCM, DTS-HD MA, ...)                                                                                 |
+| `audio_format_code`           | Audio format raw code (DBD, DTS, MPG, LPC, ...)                                                                                         |
+| `audio_channels`              | Audio channels (2ch, 5.1ch, 7.1ch, ...)                                                                                                 |
+| `audio_channels_code`         | Audio channels raw code (2CH, 51C, 71C, ...)                                                                                            |
+| `audio_dialog_primary`        | Primary audio dialog language                                                                                                           |
+| `audio_dialog_primary_code`   | Primary audio dialog ISO 639-2 code                                                                                                     |
+| `audio_dialog_secondary`      | Secondary audio dialog language                                                                                                         |
+| `audio_dialog_secondary_code` | Secondary audio dialog ISO 639-2 code                                                                                                   |
+| `subtitle`                    | Subtitle language                                                                                                                       |
+| `subtitle_code`               | Subtitle raw code                                                                                                                       |
+| `sample_rate`                 | Current track sampling frequency (kHz)                                                                                                  |
+| `firmware_version`            | Firmware version                                                                                                                        |
+| `model_name`                  | Model name                                                                                                                              |
+| `network_connection`          | Network connection test result (Connected / Failed)                                                                                     |
+| `random_mode`                 | Random/shuffle mode (only updated when the player reports it)                                                                           |
+| `last_error`                  | Last error reported by the player (Busy / NACK: <command>)                                                                              |
 
 ### Troubleshooting
 

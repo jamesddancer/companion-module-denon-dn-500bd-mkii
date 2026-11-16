@@ -6,6 +6,8 @@ import { UpdatePresets } from './presets.js'
 import { UpdateVariableDefinitions, INITIAL_VALUES } from './variables.js'
 import {
 	ACK,
+	formatHMS,
+	formatMS,
 	FAST_POLL,
 	ONCE_POLL,
 	PacketSplitter,
@@ -32,6 +34,8 @@ const IDLE_FLUSH_MS = 80
 /** Warn when this many status requests in a row get no reply */
 const NO_REPLY_WARN_COUNT = 5
 /** After this many consecutive "error" replies, a status request is only polled every ERROR_BACKOFF_MS */
+/** track_length only follows elapsed+remaining when it moves by more than this many seconds */
+const LENGTH_TOLERANCE_S = 2
 const ERROR_LIMIT = 3
 const ERROR_BACKOFF_MS = 30000
 
@@ -60,6 +64,8 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		this.requestErrors = {}
 		this.requestBackoffUntil = {}
 		this.acksSent = 0
+		this.pollCycle = 0
+		this.timeSamples = {}
 
 		this.splitter = new PacketSplitter((msg) => this.handleMessage(msg))
 	}
@@ -245,6 +251,7 @@ export default class DenonDN500BDInstance extends InstanceBase {
 	onDisconnect() {
 		this.stopPolling()
 		this.clearQueue()
+		this.timeSamples = {}
 		this.updateState({ connection: 'Disconnected' })
 	}
 
@@ -301,11 +308,12 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		if (!force && (this.requestBackoffUntil[name] ?? 0) > Date.now()) return
 		if (this.queue.some((q) => q.body === req.body)) return
 		if (this.pending && this.pending.body === req.body) return
-		this.queue.push({ body: req.body, kind: 'status', poll: true, req, name })
+		this.queue.push({ body: req.body, kind: 'status', poll: true, req, name, cycle: this.pollCycle })
 		this.processQueue()
 	}
 
 	requestAllStatus(includeOnce = false) {
+		this.pollCycle++
 		const list = [...FAST_POLL, ...SLOW_POLL, ...(includeOnce ? ONCE_POLL : [])]
 		for (const name of list) this.requestStatus(name)
 		this.lastSlowPoll = Date.now()
@@ -388,6 +396,11 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			if (this.verbose)
 				this.log('debug', `No reply to @0${item.body} within ${timeout} ms (${rxDuring} bytes received meanwhile)`)
 			this.noReplyStreak++
+			if (rxDuring === 0) {
+				// Total silence: probably gone to standby. Skip the rest of this cycle and check power.
+				this.queue = this.queue.filter((q) => !q.poll)
+				this.requestStatus('power', true)
+			}
 			if (this.noReplyStreak >= NO_REPLY_WARN_COUNT && !this.noReplyWarned) {
 				this.noReplyWarned = true
 				this.log(
@@ -526,7 +539,7 @@ export default class DenonDN500BDInstance extends InstanceBase {
 				this.log('info', 'Status replies are arriving again')
 			}
 			this.setPower('On')
-			this.applyStatus(parsed)
+			this.applyStatus(parsed, solicited ? pending.cycle : undefined)
 		}
 
 		if (solicited && pending.gotAck) {
@@ -568,6 +581,10 @@ export default class DenonDN500BDInstance extends InstanceBase {
 				values[k] = typeof init === 'string' ? 'N/A' : init
 			}
 			this.updateState(values)
+			if (sample.key === 'elapsed' || sample.key === 'remaining') {
+				this.timeSamples = {}
+				this.resetTrackLength()
+			}
 		}
 		if (count === ERROR_LIMIT) {
 			this.log(
@@ -578,16 +595,57 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		if (count >= ERROR_LIMIT) this.requestBackoffUntil[name] = Date.now() + ERROR_BACKOFF_MS
 	}
 
-	applyStatus(parsed) {
-		const prev = this.state
+	applyStatus(parsed, cycle) {
+		// Snapshot: updateState() mutates this.state in place
+		const prev = { ...this.state }
 		this.updateState(parsed.values)
 
-		// Refresh metadata when the track, title or disc changes
+		// Refresh metadata (and forget the track length) when the track, title or disc changes
 		const changed = (k) => k in parsed.values && parsed.values[k] !== prev[k]
 		if (changed('track_number') || changed('group_number') || changed('disc_status_code')) {
+			this.resetTrackLength()
 			for (const name of SLOW_POLL) this.requestStatus(name)
 			this.lastSlowPoll = Date.now()
 		}
+
+		if (parsed.key === 'elapsed' || parsed.key === 'remaining') {
+			const secs = parsed.values[parsed.key === 'elapsed' ? 'elapsed_seconds' : 'remaining_seconds']
+			this.onTimeSample(parsed.key, secs, cycle)
+		}
+	}
+
+	/**
+	 * track_length = elapsed + remaining, using an elapsed and a remaining answer from the same poll
+	 * cycle (so they were read ~0.1 s apart). The value is held unless it moves by more than
+	 * LENGTH_TOLERANCE_S, or the track/title/disc changes.
+	 */
+	onTimeSample(key, secs, cycle) {
+		if (secs === null || secs === undefined || isNaN(secs)) {
+			// Unknown time: the length is unknown too
+			this.timeSamples = {}
+			this.resetTrackLength()
+			return
+		}
+		if (cycle === undefined) return // unsolicited update: can't pair it reliably
+		this.timeSamples[key] = { secs, cycle }
+		const e = this.timeSamples.elapsed
+		const r = this.timeSamples.remaining
+		if (!e || !r || e.cycle !== r.cycle) return
+
+		const total = e.secs + r.secs
+		const current = this.state.track_length_seconds
+		if (current === null || current === undefined || Math.abs(total - current) > LENGTH_TOLERANCE_S) {
+			this.updateState({
+				track_length: formatHMS(total),
+				track_length_mmss: formatMS(total),
+				track_length_seconds: total,
+			})
+		}
+	}
+
+	resetTrackLength() {
+		this.timeSamples = {}
+		this.updateState({ track_length: '', track_length_mmss: '', track_length_seconds: null })
 	}
 
 	/** Merge values into state, push changed variables and re-check affected feedbacks */
@@ -638,6 +696,7 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			return
 		}
 
+		this.pollCycle++
 		for (const name of FAST_POLL) this.requestStatus(name)
 
 		if (Date.now() - this.lastSlowPoll >= SLOW_POLL_MS) {
