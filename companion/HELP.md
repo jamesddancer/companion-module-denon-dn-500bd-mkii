@@ -10,6 +10,7 @@ This module controls a Denon DN-500BD MKII Blu-ray player over the network (TCP)
 - **Poll interval**: how often to poll, in ms (default `1000`). Track/disc metadata (titles, audio format, etc.) is refreshed every 5 seconds and whenever the track, title or disc changes.
 - **Acknowledge unsolicited status messages**: the player re-sends status it pushes on its own until it receives an ACK. Leave this on.
 - **Response timeout**: how long to wait for the player to answer each command (default `500` ms).
+- **Debug log raw traffic**: logs every packet sent (TX) and every byte received (RX, as hex and text) plus each timeout at debug level. On by default; turn it off once everything works.
 
 The player only answers one command at a time, so commands are queued. Button presses always go ahead of queued status requests.
 
@@ -74,6 +75,15 @@ Use them as `$(<connection label>:<variable>)`, for example `$(denon:elapsed_tim
 | `network_connection`          | Network connection test result (Connected / Failed)                                                      |
 | `random_mode`                 | Random/shuffle mode (only updated when the player reports it)                                            |
 | `last_error`                  | Last error reported by the player (Busy / NACK: <command>)                                               |
+
+### Troubleshooting
+
+Open the connection's log with debug messages shown:
+
+- `Receiving status from the player (first reply: ...)` at info level means status is being read.
+- `RX ... bytes: ...` lines show exactly what the player sent. ACK/NACK may arrive as the bytes 0x06/0x15 or as the text `ack`/`nack`; both are accepted.
+- `No reply to @0?XX within N ms (0 bytes received meanwhile)` means the player said nothing to that request.
+- A warning `... status requests in a row got no usable reply` or `No bytes at all received from the player` means status replies aren't arriving or are in a format the module doesn't recognise. The RX lines show what did arrive.
 
 ### Presets
 

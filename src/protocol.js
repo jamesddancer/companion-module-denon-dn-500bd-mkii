@@ -457,19 +457,52 @@ function sampleRate(v) {
 /**
  * Parse the body of a status information packet (everything after '@0', without '\r').
  * Returns { key, values } or null if the packet is not recognised.
+ * Tolerates an echoed '?' in front of the answer (the guide shows "@0?PCGpXXXX").
  */
 export function parseStatus(body) {
-	for (const p of PARSERS) {
-		if (body.startsWith(p.prefix)) {
-			return p.parse(body.slice(p.prefix.length))
+	const tryParse = (b) => {
+		for (const p of PARSERS) {
+			if (b.startsWith(p.prefix)) {
+				return p.parse(b.slice(p.prefix.length))
+			}
 		}
+		return null
 	}
-	return null
+	const trimmed = body.replace(/^[\s\0]+/, '')
+	return tryParse(trimmed) ?? (trimmed.startsWith('?') ? tryParse(trimmed.slice(1)) : null)
 }
 
+/** Render bytes for the debug log: hex plus escaped ASCII */
+export function describeBytes(data) {
+	const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'latin1')
+	const hex = buf.toString('hex').replace(/(..)/g, '$1 ').trim()
+	let ascii = ''
+	for (const b of buf) {
+		if (b === 0x0d) ascii += '\\r'
+		else if (b === 0x0a) ascii += '\\n'
+		else if (b === ACK) ascii += '<ACK>'
+		else if (b === NACK) ascii += '<NACK>'
+		else if (b >= 0x20 && b < 0x7f) ascii += String.fromCharCode(b)
+		else ascii += `<${b.toString(16).padStart(2, '0')}>`
+	}
+	return `${hex} | ${ascii}`
+}
+
+const ASCII_ACK = 'ack'
+const ASCII_NACK = 'nack'
+/** Characters that end a packet. ACK/NACK bytes also end one (they are not consumed). */
+const TERMINATORS = new Set(['\r', '\n', '\0', String.fromCharCode(ACK), String.fromCharCode(NACK)])
+
 /**
- * Incremental stream splitter. Feed it Buffers; it calls back with
- *   { type: 'ack' } | { type: 'nack' } | { type: 'packet', body }
+ * Incremental, tolerant stream splitter. Feed it Buffers; it calls back with
+ *   { type: 'ack', raw } | { type: 'nack', raw } | { type: 'packet', body, raw }
+ *
+ * Accepts:
+ *  - ACK/NACK as the bytes 0x06/0x15 (per the guide) or as the ASCII text "ack"/"nack"
+ *    (what DN-500BD MKII units have been observed to send in practice)
+ *  - packets terminated by \r, \r\n, \n or \0, or directly followed by an ACK/NACK byte
+ *  - packets with '@0', '@' or no start character at all
+ *  - a trailing packet with no terminator, once flush() is called (after an idle gap)
  * Text is decoded as latin1 (ISO/IEC 8859-1, p.20).
  */
 export class PacketSplitter {
@@ -478,39 +511,82 @@ export class PacketSplitter {
 		this.buffer = ''
 	}
 
+	/** True if there is unprocessed (unterminated) data waiting */
+	get hasPending() {
+		return this.buffer.length > 0
+	}
+
 	push(data) {
 		this.buffer += Buffer.isBuffer(data) ? data.toString('latin1') : String(data)
+		this.process(false)
+	}
 
+	/** Treat whatever is buffered as complete (call after the line has been idle a while) */
+	flush() {
+		this.process(true)
+	}
+
+	process(force) {
 		for (;;) {
+			// Drop separators / whitespace between messages
+			const lead = /^[\r\n\0 \t]+/.exec(this.buffer)
+			if (lead) this.buffer = this.buffer.slice(lead[0].length)
 			if (this.buffer.length === 0) return
 
 			const ch = this.buffer.charCodeAt(0)
-			if (ch === ACK) {
+			if (ch === ACK || ch === NACK) {
 				this.buffer = this.buffer.slice(1)
-				this.onMessage({ type: 'ack' })
+				this.onMessage({ type: ch === ACK ? 'ack' : 'nack', raw: String.fromCharCode(ch) })
 				continue
 			}
-			if (ch === NACK) {
-				this.buffer = this.buffer.slice(1)
-				this.onMessage({ type: 'nack' })
+
+			// ASCII "ack" / "nack" (any case)
+			const lower = this.buffer.slice(0, 4).toLowerCase()
+			if (lower.startsWith(ASCII_NACK)) {
+				const raw = this.buffer.slice(0, 4)
+				this.buffer = this.buffer.slice(4)
+				this.onMessage({ type: 'nack', raw })
 				continue
 			}
-			if (ch === 0x40 /* @ */) {
-				const end = this.buffer.indexOf(END)
-				if (end === -1) {
+			if (lower.startsWith(ASCII_ACK)) {
+				const raw = this.buffer.slice(0, 3)
+				this.buffer = this.buffer.slice(3)
+				this.onMessage({ type: 'ack', raw })
+				continue
+			}
+			if (!force && (ASCII_NACK.startsWith(lower) || ASCII_ACK.startsWith(lower))) {
+				// Could be the start of "ack"/"nack": wait for more data
+				return
+			}
+
+			// A packet: runs until a terminator, an ACK/NACK byte, or the next "@0"
+			let end = -1
+			for (let i = 1; i < this.buffer.length; i++) {
+				const c = this.buffer[i]
+				if (TERMINATORS.has(c)) {
+					end = i
+					break
+				}
+				if (c === '@' && this.buffer[i + 1] === '0') {
+					end = i
+					break
+				}
+			}
+			if (end === -1) {
+				if (!force) {
 					// wait for more data, but don't grow forever
 					if (this.buffer.length > 1024) this.buffer = ''
 					return
 				}
-				const packet = this.buffer.slice(0, end)
-				this.buffer = this.buffer.slice(end + 1)
-				// strip '@' + ID character
-				const body = packet.length >= 2 ? packet.slice(2) : ''
-				this.onMessage({ type: 'packet', body })
-				continue
+				end = this.buffer.length
 			}
-			// Anything else (stray \r, \n, noise) is dropped
-			this.buffer = this.buffer.slice(1)
+
+			const raw = this.buffer.slice(0, end)
+			this.buffer = this.buffer.slice(end)
+			let body = raw
+			if (body.startsWith('@0')) body = body.slice(2)
+			else if (body.startsWith('@')) body = body.slice(1).replace(/^ ?0/, '')
+			if (body.length > 0) this.onMessage({ type: 'packet', body, raw })
 		}
 	}
 

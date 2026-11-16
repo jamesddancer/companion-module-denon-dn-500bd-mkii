@@ -10,12 +10,44 @@ test('framing', () => {
 	const s = new PacketSplitter((m) => out.push(m))
 	s.push(Buffer.from('\x06@0STP'))
 	s.push(Buffer.from('L\r\x15@0CDTO\r\n'))
-	assert.deepEqual(out, [
-		{ type: 'ack' },
-		{ type: 'packet', body: 'STPL' },
-		{ type: 'nack' },
-		{ type: 'packet', body: 'CDTO' },
+	assert.deepEqual(
+		out.map(({ type, body }) => (body === undefined ? { type } : { type, body })),
+		[{ type: 'ack' }, { type: 'packet', body: 'STPL' }, { type: 'nack' }, { type: 'packet', body: 'CDTO' }],
+	)
+})
+
+const split = (chunks, flush = false) => {
+	const out = []
+	const s = new PacketSplitter((m) => out.push(m.type === 'packet' ? `P:${m.body}` : m.type))
+	for (const c of chunks) s.push(Buffer.from(c, 'latin1'))
+	if (flush) s.flush()
+	return out
+}
+
+test('tolerant framing: ASCII ack/nack text', () => {
+	assert.deepEqual(split(['ack@0STPL\r', 'nack', 'AC', 'K\r\n@0CDCI\r\n']), ['ack', 'P:STPL', 'nack', 'ack', 'P:CDCI'])
+})
+
+test('tolerant framing: \\n, no @0 prefix, ACK byte as terminator, back-to-back packets', () => {
+	assert.deepEqual(split(['STPL\n', '@0CDCI\x06', '@0Tr0001@0Tt0012\r', '@ 0ST PP\r']), [
+		'P:STPL',
+		'P:CDCI',
+		'ack',
+		'P:Tr0001',
+		'P:Tt0012',
+		'P:ST PP',
 	])
+})
+
+test('tolerant framing: unterminated packet only emitted on flush', () => {
+	assert.deepEqual(split(['@0STPL']), [])
+	assert.deepEqual(split(['@0STPL'], true), ['P:STPL'])
+	assert.deepEqual(split(['ac'], true), ['P:ac'])
+})
+
+test('answer with echoed "?"', () => {
+	assert.equal(p('?STPL').values.track_status, 'Playing')
+	assert.equal(p('?PCGp0003').values.group_number, 3)
 })
 
 test('latin1 text', () => {

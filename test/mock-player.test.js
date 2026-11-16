@@ -12,6 +12,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 class MockPlayer {
 	constructor(opts = {}) {
 		this.ackAfter = !!opts.ackAfter
+		// Wire format variants seen (or plausible) on real units over TCP
+		this.ackText = opts.ackText ?? false // send "ack"/"nack" text instead of 0x06/0x15
+		this.term = opts.term ?? '\r' // packet terminator
+		this.prefix = opts.prefix ?? '@0' // packet start
+		this.statusAck = opts.statusAck ?? true // send an ACK along with status answers
+		this.silent = !!opts.silent // never reply at all
+		this.statusSilent = !!opts.statusSilent // ACK commands (and ?PW) but never answer status requests
 		this.power = true
 		this.disc = 'CI'
 		this.status = 'PP'
@@ -36,7 +43,7 @@ class MockPlayer {
 	/** Send unsolicited status; like the real player, resend up to twice if not ACKed within 300ms (p.5) */
 	push(body, attempt = 0) {
 		const acks = this.acksFromHost
-		for (const c of this.clients) c.write(`@0${body}\r`, 'latin1')
+		for (const c of this.clients) c.write(`${this.prefix}${body}${this.term}`, 'latin1')
 		if (attempt < 2) {
 			setTimeout(() => {
 				if (this.acksFromHost === acks && this.clients.size) this.push(body, attempt + 1)
@@ -78,19 +85,30 @@ class MockPlayer {
 		})
 	}
 
+	ackStr() {
+		return this.ackText ? 'ack' : '\x06'
+	}
+
 	handle(sock, body) {
 		this.received.push(body)
+		if (this.silent) return
+		if (this.statusSilent) {
+			if (!body.startsWith('?') || body === '?PW') sock.write(this.ackStr())
+			return
+		}
 		if (!this.power) {
 			if (body === 'PW00') {
 				this.power = true
-				sock.write('\x06')
+				sock.write(this.ackStr())
 			}
 			return // standby: no answer
 		}
-		const answer = (code) => sock.write(this.ackAfter ? `@0${code}\r\x06` : `\x06@0${code}\r`, 'latin1')
+		const ack = this.statusAck ? this.ackStr() : ''
+		const pkt = (code) => `${this.prefix}${code}${this.term}`
+		const answer = (code) => sock.write(this.ackAfter ? pkt(code) + ack : ack + pkt(code), 'latin1')
 		switch (body) {
 			case '?PW':
-				return sock.write('\x06')
+				return sock.write(this.ackStr())
 			case '?CD':
 				return answer('CD' + this.disc)
 			case '?ST':
@@ -135,23 +153,23 @@ class MockPlayer {
 				return answer('PCCT00')
 			case '2353':
 				this.status = 'PL'
-				return sock.write('\x06')
+				return sock.write(this.ackStr())
 			case '2348':
 				this.status = 'PP'
-				return sock.write('\x06')
+				return sock.write(this.ackStr())
 			case 'PCDTRYOP':
 				this.disc = 'TO'
-				return sock.write('\x06')
+				return sock.write(this.ackStr())
 			case 'PW01':
 				this.power = false
-				return sock.write('\x06')
+				return sock.write(this.ackStr())
 			default:
 				if (/^Tr\d{4}$/.test(body)) {
 					this.track = parseInt(body.slice(2), 10)
-					return sock.write('\x06')
+					return sock.write(this.ackStr())
 				}
 				// Any other control command is accepted; unknown status requests are rejected
-				return sock.write(body.startsWith('?') ? '\x15' : '\x06')
+				return sock.write(body.startsWith('?') ? (this.ackText ? 'nack' : '\x15') : this.ackStr())
 		}
 	}
 }
@@ -318,3 +336,60 @@ async function scenario(opts) {
 
 test('module against mock player (ACK before status packet)', () => scenario({ ackAfter: false }))
 test('module against mock player (ACK after status packet)', () => scenario({ ackAfter: true }))
+test('module against mock player (ASCII "ack" text, \\r\\n terminators)', () =>
+	scenario({ ackText: true, term: '\r\n' }))
+test('module against mock player (no @0 prefix, \\n terminator, no ACK on status)', () =>
+	scenario({ ackText: true, prefix: '', term: '\n', statusAck: false }))
+test('module against mock player (no terminator at all)', () => scenario({ ackText: true, term: '' }))
+
+test('silent player: warns after repeated unanswered polls, does not fake standby wrongly', async () => {
+	const player = new MockPlayer({ silent: true })
+	const port = await player.listen()
+	const { ctx, proxy } = makeContext()
+	const logs = []
+	proxy.log = (level, msg) => logs.push([level, msg])
+	const instance = new ModuleInstance(proxy)
+	instance.log = (level, msg) => logs.push([level, msg])
+	try {
+		await instance.init({ host: '127.0.0.1', port: String(port), poll_interval: 250, response_timeout: 100 }, true)
+		assert.ok(
+			await waitFor(() => logs.some(([l, m]) => l === 'warn' && /No bytes at all received/.test(m)), 6000),
+			'no-reply warning logged',
+		)
+		assert.ok(
+			logs.some(([l, m]) => l === 'debug' && m.startsWith('TX ')),
+			'TX logged',
+		)
+		assert.ok(
+			logs.some(([l, m]) => l === 'debug' && /No ACK to @0\?PW/.test(m)),
+			'timeouts logged',
+		)
+	} finally {
+		await instance.destroy()
+		await player.close().catch(() => {})
+	}
+})
+
+test('player that ACKs but never answers status: warns about unexpected format', async () => {
+	const player = new MockPlayer({ statusSilent: true, ackText: true })
+	const port = await player.listen()
+	const { ctx, proxy } = makeContext()
+	const logs = []
+	const instance = new ModuleInstance(proxy)
+	instance.log = (level, msg) => logs.push([level, msg])
+	try {
+		await instance.init({ host: '127.0.0.1', port: String(port), poll_interval: 250, response_timeout: 100 }, true)
+		assert.ok(
+			await waitFor(() => logs.some(([l, m]) => l === 'warn' && /no usable reply/.test(m)), 6000),
+			'no-reply warning logged',
+		)
+		assert.equal(ctx.variables.power, 'On')
+		assert.ok(
+			logs.some(([l, m]) => l === 'debug' && m.startsWith('RX 3 bytes: 61 63 6b | ack')),
+			'raw RX logged',
+		)
+	} finally {
+		await instance.destroy()
+		await player.close().catch(() => {})
+	}
+})

@@ -12,6 +12,7 @@ import {
 	SLOW_POLL,
 	STATUS_REQUESTS,
 	buildPacket,
+	describeBytes,
 	parseStatus,
 } from './protocol.js'
 
@@ -26,6 +27,10 @@ const SLOW_POLL_MS = 5000
 const ACK_GRACE_MS = 60
 /** Number of unanswered power requests before reporting the player as off */
 const POWER_OFF_MISSES = 2
+/** Treat a buffered, unterminated packet as complete after this much silence */
+const IDLE_FLUSH_MS = 80
+/** Warn when this many status requests in a row get no reply */
+const NO_REPLY_WARN_COUNT = 5
 
 export default class DenonDN500BDInstance extends InstanceBase {
 	constructor(internal) {
@@ -43,6 +48,12 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		this.lastSlowPoll = 0
 		this.powerMisses = 0
 		this.lastNetworkError = undefined
+		this.flushTimer = undefined
+		this.lastRxAt = 0
+		this.rxBytes = 0
+		this.gotFirstStatus = false
+		this.noReplyStreak = 0
+		this.noReplyWarned = false
 
 		this.splitter = new PacketSplitter((msg) => this.handleMessage(msg))
 	}
@@ -134,6 +145,13 @@ export default class DenonDN500BDInstance extends InstanceBase {
 				max: 5000,
 				default: 500,
 			},
+			{
+				type: 'checkbox',
+				id: 'verbose_log',
+				label: 'Debug log raw traffic (TX/RX bytes, timeouts)',
+				width: 6,
+				default: true,
+			},
 		]
 	}
 
@@ -201,6 +219,10 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			this.updateStatus(InstanceStatus.Ok)
 			this.splitter.reset()
 			this.powerMisses = 0
+			this.gotFirstStatus = false
+			this.noReplyStreak = 0
+			this.noReplyWarned = false
+			this.rxBytes = 0
 			this.updateState({ connection: 'Connected' })
 			this.requestAllStatus(true)
 			this.startPolling()
@@ -208,13 +230,35 @@ export default class DenonDN500BDInstance extends InstanceBase {
 
 		this.socket.on('end', () => this.onDisconnect())
 
-		this.socket.on('data', (data) => this.splitter.push(data))
+		this.socket.on('data', (data) => this.onData(data))
 	}
 
 	onDisconnect() {
 		this.stopPolling()
 		this.clearQueue()
 		this.updateState({ connection: 'Disconnected' })
+	}
+
+	get verbose() {
+		return this.config.verbose_log !== false
+	}
+
+	onData(data) {
+		this.lastRxAt = Date.now()
+		this.rxBytes += data.length
+		if (this.verbose) this.log('debug', `RX ${data.length} bytes: ${describeBytes(data)}`)
+		this.splitter.push(data)
+		if (this.flushTimer) clearTimeout(this.flushTimer)
+		this.flushTimer = undefined
+		if (this.splitter.hasPending) {
+			this.flushTimer = setTimeout(() => {
+				this.flushTimer = undefined
+				if (this.splitter.hasPending) {
+					if (this.verbose) this.log('debug', 'RX idle: treating unterminated data as a complete packet')
+					this.splitter.flush()
+				}
+			}, IDLE_FLUSH_MS)
+		}
 	}
 
 	get isConnected() {
@@ -259,6 +303,8 @@ export default class DenonDN500BDInstance extends InstanceBase {
 
 	clearQueue() {
 		this.queue = []
+		if (this.flushTimer) clearTimeout(this.flushTimer)
+		this.flushTimer = undefined
 		this.pending = undefined
 		if (this.pendingTimer) clearTimeout(this.pendingTimer)
 		if (this.gapTimer) clearTimeout(this.gapTimer)
@@ -281,7 +327,11 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		const timeout = Number(this.config.response_timeout) || 500
 		this.pendingTimer = setTimeout(() => this.onPendingTimeout(item), timeout)
 
-		this.socket.send(buildPacket(item.body))
+		item.sentAt = Date.now()
+		item.rxAtSend = this.rxBytes
+		const packet = buildPacket(item.body)
+		if (this.verbose) this.log('debug', `TX ${describeBytes(packet)}`)
+		this.socket.send(packet)
 	}
 
 	completePending() {
@@ -297,12 +347,48 @@ export default class DenonDN500BDInstance extends InstanceBase {
 	onPendingTimeout(item) {
 		if (this.pending !== item) return
 
+		const timeout = Number(this.config.response_timeout) || 500
+		const rxDuring = this.rxBytes - (item.rxAtSend ?? this.rxBytes)
 		if (item.req && item.req.ackIsAnswer) {
-			// Power status: "No answer" means the power is off (p.16)
-			this.powerMisses++
-			if (this.powerMisses >= POWER_OFF_MISSES) this.setPower('Off')
+			// Power status: "No answer" means the power is off (p.16). Only count it as a miss if
+			// the player sent nothing at all, so an unrecognised ACK format can't fake standby.
+			if (rxDuring === 0) {
+				this.powerMisses++
+				// Nothing else will be answered either; skip the rest of this poll cycle
+				this.queue = this.queue.filter((q) => !q.poll)
+				this.noReplyStreak = 0
+				if (this.powerMisses >= POWER_OFF_MISSES) {
+					if (this.state.power !== 'Off' && this.rxBytes === 0) {
+						this.log(
+							'warn',
+							'No bytes at all received from the player since connecting. It is in standby, ' +
+								'or it is not sending replies on this TCP connection.',
+						)
+					}
+					this.setPower('Off')
+				}
+			} else {
+				this.setPower('On')
+			}
+			if (this.verbose)
+				this.log('debug', `No ACK to @0${item.body} within ${timeout} ms (${rxDuring} bytes received meanwhile)`)
 		} else if (item.kind === 'control') {
-			this.log('debug', `No response to @0${item.body}`)
+			this.log('debug', `No response to @0${item.body} within ${timeout} ms (${rxDuring} bytes received meanwhile)`)
+		} else {
+			if (this.verbose)
+				this.log('debug', `No reply to @0${item.body} within ${timeout} ms (${rxDuring} bytes received meanwhile)`)
+			this.noReplyStreak++
+			if (this.noReplyStreak >= NO_REPLY_WARN_COUNT && !this.noReplyWarned) {
+				this.noReplyWarned = true
+				this.log(
+					'warn',
+					`${this.noReplyStreak} status requests in a row got no usable reply ` +
+						`(${this.rxBytes} bytes received since connecting). ` +
+						(this.rxBytes === 0
+							? 'The player is sending nothing back on this connection.'
+							: 'The player is replying in an unexpected format; see the RX debug lines.'),
+				)
+			}
 		}
 		this.completePending()
 	}
@@ -357,11 +443,16 @@ export default class DenonDN500BDInstance extends InstanceBase {
 		}
 
 		// Status information packet
+		if (pending && msg.body === pending.body) {
+			// Our own command echoed back; not an answer
+			if (this.verbose) this.log('debug', `Ignoring echo of @0${msg.body}`)
+			return
+		}
 		const parsed = parseStatus(msg.body)
 		const solicited = !!(pending && pending.req && parsed && parsed.key === pending.req.key)
 
 		if (!parsed) {
-			this.log('debug', `Unrecognised message: @0${msg.body}`)
+			this.log('debug', `Unrecognised message: ${describeBytes(msg.raw ?? msg.body)}`)
 		} else if (parsed.key === 'busy') {
 			this.log('debug', 'Player busy')
 			this.updateState(parsed.values)
@@ -372,6 +463,15 @@ export default class DenonDN500BDInstance extends InstanceBase {
 			}
 			return
 		} else {
+			if (!this.gotFirstStatus) {
+				this.gotFirstStatus = true
+				this.log('info', `Receiving status from the player (first reply: ${JSON.stringify(msg.raw ?? msg.body)})`)
+			}
+			this.noReplyStreak = 0
+			if (this.noReplyWarned) {
+				this.noReplyWarned = false
+				this.log('info', 'Status replies are arriving again')
+			}
 			this.setPower('On')
 			this.applyStatus(parsed)
 		}
